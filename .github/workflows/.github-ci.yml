@@ -2,6 +2,8 @@ name: CI + Auto Merge
 
 on:
   pull_request:
+    branches:
+      - master
     types:
       - opened
       - synchronize
@@ -9,6 +11,9 @@ on:
       - ready_for_review
       - labeled
       - unlabeled
+  merge_group:
+    branches:
+      - master
   workflow_dispatch:
     inputs:
       pr_number:
@@ -31,19 +36,37 @@ permissions:
 
 jobs:
   validate:
-    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Show context
+      - name: Show event context
         run: |
           echo "Event: ${{ github.event_name }}"
           echo "Ref: ${{ github.ref }}"
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             echo "PR number: ${{ github.event.pull_request.number }}"
           fi
+          if [ "${{ github.event_name }}" = "merge_group" ]; then
+            echo "Merge group head sha: ${{ github.event.merge_group.head_sha }}"
+            echo "Merge group base sha: ${{ github.event.merge_group.base_sha }}"
+          fi
+
+  merge-queue-check:
+    if: github.event_name == 'merge_group'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout queue branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.merge_group.head_sha }}
+
+      - name: Validate queued branch
+        run: |
+          echo "Running checks for merge queue..."
+          git rev-parse HEAD
 
   auto-merge:
     if: >
