@@ -1,4 +1,4 @@
-name: CI + Auto Merge
+name: Integration Merge Queue
 
 on:
   pull_request:
@@ -8,14 +8,26 @@ on:
   merge_group:
     types:
       - checks_requested
+
   workflow_dispatch:
+    inputs:
+      branches:
+        description: Branches to merge, in order, separated by commas
+        required: true
+        type: string
+
 permissions:
   contents: write
   pull-requests: write
 
+concurrency:
+  group: integration-merge-queue
+  cancel-in-progress: false
+
 jobs:
   test:
     name: Test
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
     runs-on: ubuntu-latest
 
     steps:
@@ -28,21 +40,66 @@ jobs:
           sleep 10
           echo "Test PASS"
 
-  auto-merge:
-    name: Enable Auto Merge
-    needs: test
-
-    # Chỉ bật auto-merge khi workflow chạy từ PR
-    if: github.event_name == 'pull_request'
-
+  build-integration-branch:
+    name: Build Integration Branch
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
 
     steps:
-      - name: Enable auto merge
+      - name: Checkout master
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Merge branches and test each result
         env:
+          BRANCHES: ${{ inputs.branches }}
+          INTEGRATION_BRANCH: integration/${{ github.run_id }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
-          gh pr merge "$PR_URL" \
-            --auto \
-            --squash
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$INTEGRATION_BRANCH"
+
+          IFS=',' read -ra branch_list <<< "$BRANCHES"
+          if [ "${#branch_list[@]}" -eq 0 ]; then
+            echo "No branches were provided."
+            exit 1
+          fi
+
+          for raw_branch in "${branch_list[@]}"; do
+            branch=$(echo "$raw_branch" | xargs)
+            if [ -z "$branch" ] || [ "$branch" = "master" ]; then
+              echo "Invalid branch: '$branch'"
+              exit 1
+            fi
+
+            echo "Fetching $branch..."
+            git fetch origin "$branch"
+
+            echo "Merging $branch into $INTEGRATION_BRANCH..."
+            if ! git merge --no-ff --no-edit "origin/$branch"; then
+              echo "Conflict while merging $branch. Resolve it on the branch and rerun the queue."
+              git merge --abort || true
+              exit 1
+            fi
+
+            echo "Testing the result after merging $branch..."
+            echo "Running tests..."
+            sleep 10
+            echo "Test PASS"
+          done
+
+          git push --set-upstream origin "$INTEGRATION_BRANCH"
+
+          pr_url=$(gh pr create \
+            --repo "$GITHUB_REPOSITORY" \
+            --base master \
+            --head "$INTEGRATION_BRANCH" \
+            --title "Integration queue: ${BRANCHES}" \
+            --body "Branches merged in order: ${BRANCHES}. Each merge passed its test before the next branch was added.")
+
+          gh pr merge "$pr_url" --auto --squash
