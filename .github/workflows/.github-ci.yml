@@ -1,6 +1,10 @@
 name: CI + Auto Merge
 
 on:
+  push:
+    branches-ignore:
+      - master
+
   pull_request:
     branches:
       - master
@@ -27,6 +31,37 @@ jobs:
           echo "Running tests..."
           sleep 10
           echo "Test PASS"
+
+  create-pull-request:
+    name: Create Pull Request
+    needs: test
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Create pull request when tests pass
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH_NAME: ${{ github.ref_name }}
+        run: |
+          open_prs=$(gh pr list \
+            --repo "$GITHUB_REPOSITORY" \
+            --head "$BRANCH_NAME" \
+            --base master \
+            --state open \
+            --json number \
+            --jq 'length')
+
+          if [ "$open_prs" -eq 0 ]; then
+            gh pr create \
+              --repo "$GITHUB_REPOSITORY" \
+              --base master \
+              --head "$BRANCH_NAME" \
+              --title "${BRANCH_NAME}: automated pull request" \
+              --body "Tests passed in CI. This pull request is ready for the merge queue."
+          else
+            echo "An open pull request already exists for $BRANCH_NAME."
+          fi
 
   auto-merge:
     name: Enable Auto Merge
