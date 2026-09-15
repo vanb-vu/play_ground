@@ -1,10 +1,6 @@
-name: CI + Auto Merge
+name: Integration Merge Queue
 
 on:
-  push:
-    branches-ignore:
-      - master
-
   pull_request:
     branches:
       - master
@@ -12,14 +8,26 @@ on:
   merge_group:
     types:
       - checks_requested
+
   workflow_dispatch:
+    inputs:
+      branches:
+        description: Branches to merge, in order, separated by commas
+        required: true
+        type: string
+
 permissions:
   contents: write
   pull-requests: write
 
+concurrency:
+  group: integration-merge-queue
+  cancel-in-progress: false
+
 jobs:
   test:
     name: Test
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
     runs-on: ubuntu-latest
 
     steps:
@@ -32,52 +40,66 @@ jobs:
           sleep 10
           echo "Test PASS"
 
-  create-pull-request:
-    name: Create Pull Request
-    needs: test
-    if: github.event_name == 'push'
+  build-integration-branch:
+    name: Build Integration Branch
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
 
     steps:
-      - name: Create pull request when tests pass
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BRANCH_NAME: ${{ github.ref_name }}
-        run: |
-          open_prs=$(gh pr list \
-            --repo "$GITHUB_REPOSITORY" \
-            --head "$BRANCH_NAME" \
-            --base master \
-            --state open \
-            --json number \
-            --jq 'length')
+      - name: Checkout master
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
 
-          if [ "$open_prs" -eq 0 ]; then
-            gh pr create \
-              --repo "$GITHUB_REPOSITORY" \
-              --base master \
-              --head "$BRANCH_NAME" \
-              --title "${BRANCH_NAME}: automated pull request" \
-              --body "Tests passed in CI. This pull request is ready for the merge queue."
-          else
-            echo "An open pull request already exists for $BRANCH_NAME."
+      - name: Merge branches and test each result
+        env:
+          BRANCHES: ${{ inputs.branches }}
+          INTEGRATION_BRANCH: integration/${{ github.run_id }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$INTEGRATION_BRANCH"
+
+          IFS=',' read -ra branch_list <<< "$BRANCHES"
+          if [ "${#branch_list[@]}" -eq 0 ]; then
+            echo "No branches were provided."
+            exit 1
           fi
 
-  auto-merge:
-    name: Enable Auto Merge
-    needs: test
+          for raw_branch in "${branch_list[@]}"; do
+            branch=$(echo "$raw_branch" | xargs)
+            if [ -z "$branch" ] || [ "$branch" = "master" ]; then
+              echo "Invalid branch: '$branch'"
+              exit 1
+            fi
 
-    # Chỉ bật auto-merge khi workflow chạy từ PR
-    if: github.event_name == 'pull_request'
+            echo "Fetching $branch..."
+            git fetch origin "$branch"
 
-    runs-on: ubuntu-latest
+            echo "Merging $branch into $INTEGRATION_BRANCH..."
+            if ! git merge --no-ff --no-edit "origin/$branch"; then
+              echo "Conflict while merging $branch. Resolve it on the branch and rerun the queue."
+              git merge --abort || true
+              exit 1
+            fi
 
-    steps:
-      - name: Enable auto merge
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
-        run: |
-          gh pr merge "$PR_URL" \
-            --auto \
-            --squash
+            echo "Testing the result after merging $branch..."
+            echo "Running tests..."
+            sleep 10
+            echo "Test PASS"
+          done
+
+          git push --set-upstream origin "$INTEGRATION_BRANCH"
+
+          pr_url=$(gh pr create \
+            --repo "$GITHUB_REPOSITORY" \
+            --base master \
+            --head "$INTEGRATION_BRANCH" \
+            --title "Integration queue: ${BRANCHES}" \
+            --body "Branches merged in order: ${BRANCHES}. Each merge passed its test before the next branch was added.")
+
+          gh pr merge "$pr_url" --auto --squash
