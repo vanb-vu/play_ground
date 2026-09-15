@@ -40,8 +40,8 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Enable auto-merge
+      - name: Add pull request to merge queue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
-        run: gh pr merge "$PR_URL" --auto --squash
+        run: gh pr merge "$PR_URL" --merge-queue --squash
