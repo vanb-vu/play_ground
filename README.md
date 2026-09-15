@@ -17,6 +17,9 @@ pull request into `master` and enable auto-merge for that pull request.
 GitHub's merge queue then runs the required checks on the final pull request
 and merges it into `master` when all checks pass.
 
+For pull requests opened directly against `master`, the workflow also enables
+auto-merge after the PR test passes, which places each PR into the same queue.
+
 To enable the repository-side queue:
 
 1. Open **Settings > Rules > Rulesets** (or the branch protection rule for

@@ -40,6 +40,19 @@ jobs:
           sleep 10
           echo "Test PASS"
 
+  enqueue-pull-request:
+    name: Enqueue Pull Request
+    needs: test
+    if: github.event_name == 'pull_request' && needs.test.result == 'success'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Add pull request to merge queue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge "$PR_URL" --auto --squash
+
   build-integration-branch:
     name: Build Integration Branch
     if: github.event_name == 'workflow_dispatch'
